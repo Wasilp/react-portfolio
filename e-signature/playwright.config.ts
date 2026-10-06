@@ -22,6 +22,8 @@ export default defineConfig({
     env: {
       MOCK_API: "true",
       SIGNATURE_API_URL: `http://localhost:${PORT}/api/mock`,
+      DOCUMENT_ALLOWED_ORIGINS: `http://localhost:${PORT}`,
+      ESIGN_LINK_KEY: "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=", // test-only key
     },
   },
 });

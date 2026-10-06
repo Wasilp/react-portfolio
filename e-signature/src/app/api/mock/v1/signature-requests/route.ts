@@ -5,7 +5,7 @@ import { createRequest, MockError } from "@/lib/mock/store";
 
 /**
  * Mock of the *issuer* side (normally called by the Laravel app, not by this portal).
- * Accepts multipart (with an optional `document` PDF) or JSON. Returns the signing URL.
+ * Accepts multipart (with an optional `document` PDF) or JSON. Returns the encrypted signing URL.
  */
 const Input = z.object({
   title: z.string().min(1).default("Devis D-2026-0012"),
@@ -38,8 +38,7 @@ export async function POST(req: Request) {
     const parsed = Input.safeParse(raw);
     if (!parsed.success) throw new MockError(422, "validation_failed", parsed.error.message);
 
-    const { id, token } = await createRequest({ ...parsed.data, pdf, filename });
     const origin = process.env.PORTAL_URL ?? new URL(req.url).origin;
-    return NextResponse.json({ id, token, signing_url: `${origin}/sign/${token}` }, { status: 201 });
+    return NextResponse.json(await createRequest({ ...parsed.data, pdf, filename, origin }), { status: 201 });
   });
 }

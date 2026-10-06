@@ -1,6 +1,7 @@
 import "server-only";
 
-import { createHash, createHmac, randomBytes, randomUUID } from "node:crypto";
+import { createHash, createHmac, randomUUID } from "node:crypto";
+import { decodeLink, encodeLink } from "@/lib/link-token";
 import type { SignatureRequest, SignatureStatus } from "@/lib/signature-api/types";
 import { renderSamplePdf, renderSignedPdf } from "./pdf";
 
@@ -19,23 +20,21 @@ export type MockEvent = {
 
 type Audit = { at: string; type: string; ip: string; user_agent: string };
 
-type StoredRequest = Omit<SignatureRequest, "document"> & {
-  token_hash: string;
+type StoredRequest = SignatureRequest & {
+  title: string;
+  signer: { name: string; email: string };
+  expires_at: string;
   external_ref: string | null;
-  document: SignatureRequest["document"] & { bytes: Uint8Array };
+  document: { filename: string; sha256: string; bytes: Uint8Array };
   signed_document: Uint8Array | null;
   signature_png: string | null;
   audit: Audit[];
 };
 
-type Store = { requests: Map<string, StoredRequest>; byTokenHash: Map<string, string>; events: MockEvent[] };
+type Store = { requests: Map<string, StoredRequest>; events: MockEvent[] };
 
 const g = globalThis as unknown as { __esignMockStore?: Store };
-const store: Store = (g.__esignMockStore ??= {
-  requests: new Map(),
-  byTokenHash: new Map(),
-  events: [],
-});
+const store: Store = (g.__esignMockStore ??= { requests: new Map(), events: [] });
 
 export class MockError extends Error {
   constructor(
@@ -62,45 +61,64 @@ export async function createRequest(input: {
   expires_in_days?: number;
   pdf?: Uint8Array | null;
   filename?: string | null;
+  /** Public origin of this app, used to build the document and signing URLs. */
+  origin: string;
 }) {
-  // The token is the only secret in the link: random, opaque, stored hashed only.
-  const token = randomBytes(32).toString("base64url");
   const id = randomUUID();
   const bytes = input.pdf ?? (await renderSamplePdf(input.title, input.signer_name, input.issuer_name));
+  const expiresAt = Date.now() + (input.expires_in_days ?? 14) * 86_400_000;
+  const filename = input.filename ?? "document.pdf";
   const req: StoredRequest = {
     id,
     status: "pending",
     title: input.title,
-    message: input.message ?? null,
-    issuer: { name: input.issuer_name, logo_url: null },
     signer: { name: input.signer_name, email: input.signer_email },
-    document: {
-      filename: input.filename ?? "document.pdf",
-      sha256: sha256(bytes),
-      size: bytes.byteLength,
-      bytes,
-    },
-    expires_at: new Date(Date.now() + (input.expires_in_days ?? 14) * 86_400_000).toISOString(),
+    document: { filename, sha256: sha256(bytes), bytes },
+    expires_at: new Date(expiresAt).toISOString(),
     signed_at: null,
     declined_at: null,
     decline_reason: null,
-    token_hash: sha256(token),
     external_ref: input.external_ref ?? null,
     signed_document: null,
     signature_png: null,
     audit: [{ at: now(), type: "created", ip: "", user_agent: "" }],
   };
   store.requests.set(id, req);
-  store.byTokenHash.set(req.token_hash, id);
+
+  // What the real backend does: encrypt everything the portal needs into the link.
+  const token = encodeLink({
+    v: 1,
+    rid: id,
+    iat: Math.floor(Date.now() / 1000),
+    exp: Math.floor(expiresAt / 1000),
+    title: input.title,
+    message: input.message ?? null,
+    issuer: { name: input.issuer_name, logo_url: null },
+    signer: req.signer,
+    document: { url: `${input.origin}/api/mock/v1/documents/${id}`, filename, sha256: req.document.sha256 },
+  });
   await emit("signature_request.created", req);
-  return { id, token };
+  return { id, token, signing_url: `${input.origin}/sign/${token}` };
 }
 
-function findByToken(token: string): StoredRequest {
-  const id = store.byTokenHash.get(sha256(token));
-  const req = id ? store.requests.get(id) : undefined;
-  if (!req) throw new MockError(404, "not_found", "Lien de signature invalide.");
+/**
+ * Backend-side checks on every portal call: the request exists, and the forwarded link decrypts
+ * and was issued for this very request (a link for request A can't act on request B).
+ */
+function findForLink(rid: string, link: string | null): StoredRequest {
+  const req = store.requests.get(rid);
+  if (!req) throw new MockError(404, "not_found", "Demande de signature introuvable.");
+  const decoded = link ? decodeLink(link) : null;
+  const linkRid = decoded && (decoded.ok || decoded.reason === "expired") ? decoded.payload.rid : null;
+  if (linkRid !== rid) throw new MockError(403, "link_mismatch", "Lien de signature invalide.");
   return req;
+}
+
+/** Stands in for a pre-signed storage URL (S3…). The id is a random UUID. */
+export function documentById(id: string) {
+  const req = store.requests.get(id);
+  if (!req) throw new MockError(404, "not_found", "Document introuvable.");
+  return req.document;
 }
 
 async function expireIfNeeded(req: StoredRequest) {
@@ -110,20 +128,13 @@ async function expireIfNeeded(req: StoredRequest) {
   }
 }
 
-export function toPublic(req: StoredRequest): SignatureRequest {
-  const { document, ...rest } = req;
+function toPublic(req: StoredRequest): SignatureRequest {
   return {
-    id: rest.id,
-    status: rest.status,
-    title: rest.title,
-    message: rest.message,
-    issuer: rest.issuer,
-    signer: rest.signer,
-    document: { filename: document.filename, sha256: document.sha256, size: document.size },
-    expires_at: rest.expires_at,
-    signed_at: rest.signed_at,
-    declined_at: rest.declined_at,
-    decline_reason: rest.decline_reason,
+    id: req.id,
+    status: req.status,
+    signed_at: req.signed_at,
+    declined_at: req.declined_at,
+    decline_reason: req.decline_reason,
   };
 }
 
@@ -134,8 +145,8 @@ function assertActionable(req: StoredRequest) {
   }
 }
 
-export async function view(token: string, actor: Actor) {
-  const req = findByToken(token);
+export async function view(rid: string, link: string | null, actor: Actor) {
+  const req = findForLink(rid, link);
   await expireIfNeeded(req);
   if (req.status === "pending") {
     req.status = "viewed";
@@ -145,22 +156,19 @@ export async function view(token: string, actor: Actor) {
   return toPublic(req);
 }
 
-export function document(token: string) {
-  return findByToken(token).document;
-}
-
-export function signedDocument(token: string) {
-  const req = findByToken(token);
+export function signedDocument(rid: string, link: string | null) {
+  const req = findForLink(rid, link);
   if (!req.signed_document) throw new MockError(404, "not_signed", "Document pas encore signé.");
   return { bytes: req.signed_document, filename: req.document.filename.replace(/\.pdf$/i, "") + "-signe.pdf" };
 }
 
 export async function sign(
-  token: string,
+  rid: string,
+  link: string | null,
   input: { signer_name: string; signature_png: string; document_sha256: string },
   actor: Actor,
 ) {
-  const req = findByToken(token);
+  const req = findForLink(rid, link);
   await expireIfNeeded(req);
   assertActionable(req);
   if (input.document_sha256 !== req.document.sha256) {
@@ -187,8 +195,8 @@ export async function sign(
   return toPublic(req);
 }
 
-export async function decline(token: string, reason: string | null, actor: Actor) {
-  const req = findByToken(token);
+export async function decline(rid: string, link: string | null, reason: string | null, actor: Actor) {
+  const req = findForLink(rid, link);
   await expireIfNeeded(req);
   assertActionable(req);
   req.status = "declined";

@@ -6,7 +6,7 @@ import { SignatureCanvas, type SignaturePadHandle } from "./signature-pad";
 
 const initial: ActionState = { error: null };
 
-export function SigningForm({ token, signerName, documentSha256 }: { token: string; signerName: string; documentSha256: string }) {
+export function SigningForm({ token, signerName }: { token: string; signerName: string }) {
   const [signState, signFormAction, signing] = useActionState(signAction.bind(null, token), initial);
   const [declineState, declineFormAction, declining] = useActionState(declineAction.bind(null, token), initial);
   const padRef = useRef<SignaturePadHandle>(null);
@@ -27,7 +27,6 @@ export function SigningForm({ token, signerName, documentSha256 }: { token: stri
         action={signFormAction}
         className="space-y-4"
       >
-        <input type="hidden" name="document_sha256" value={documentSha256} />
         <input type="hidden" name="signature_png" value={png} />
 
         <label className="flex items-start gap-3">

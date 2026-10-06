@@ -17,25 +17,10 @@ export const signatureStatuses = [
 export const SignatureStatus = z.enum(signatureStatuses);
 export type SignatureStatus = z.infer<typeof SignatureStatus>;
 
+/** Live state of a request. Static data (title, signer, document) comes from the link itself. */
 export const SignatureRequest = z.object({
   id: z.string(),
   status: SignatureStatus,
-  title: z.string(),
-  message: z.string().nullable().optional(),
-  issuer: z.object({
-    name: z.string(),
-    logo_url: z.string().url().nullable().optional(),
-  }),
-  signer: z.object({
-    name: z.string(),
-    email: z.string(),
-  }),
-  document: z.object({
-    filename: z.string(),
-    sha256: z.string(),
-    size: z.number().int().nonnegative(),
-  }),
-  expires_at: z.string(),
   signed_at: z.string().nullable().optional(),
   declined_at: z.string().nullable().optional(),
   decline_reason: z.string().nullable().optional(),

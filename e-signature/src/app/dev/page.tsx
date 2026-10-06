@@ -1,3 +1,4 @@
+import { headers } from "next/headers";
 import { notFound, redirect } from "next/navigation";
 import { mockEnabled } from "@/lib/mock/http";
 import { createRequest, events } from "@/lib/mock/store";
@@ -9,7 +10,10 @@ async function create(form: FormData) {
   if (!mockEnabled()) notFound();
   const file = form.get("document");
   const pdf = file instanceof File && file.size > 0 && file.type === "application/pdf" ? new Uint8Array(await file.arrayBuffer()) : null;
+  const h = await headers();
+  const origin = process.env.PORTAL_URL ?? `${h.get("x-forwarded-proto") ?? "http"}://${h.get("host")}`;
   const { token } = await createRequest({
+    origin,
     title: String(form.get("title") || "Devis D-2026-0012"),
     message: String(form.get("message") || "") || null,
     issuer_name: String(form.get("issuer_name") || "SolarPro SRL"),

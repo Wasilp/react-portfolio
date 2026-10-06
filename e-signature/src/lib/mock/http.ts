@@ -11,6 +11,19 @@ export function disabled() {
   return NextResponse.json({ error: { code: "not_found", message: "Not found" } }, { status: 404 });
 }
 
+/** The forwarded signing link (see client.ts). */
+export function linkFrom(req: Request): string | null {
+  return req.headers.get("x-signature-link");
+}
+
+/** Mirrors what the real backend must do: the portal authenticates with SIGNATURE_API_KEY. */
+export function assertApiKey(req: Request) {
+  const expected = process.env.SIGNATURE_API_KEY;
+  if (expected && req.headers.get("authorization") !== `Bearer ${expected}`) {
+    throw new MockError(401, "unauthorized", "Unauthorized");
+  }
+}
+
 export function actorFrom(req: Request): Actor {
   return {
     ip: req.headers.get("x-signer-ip") ?? "",
